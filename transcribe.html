@@ -1,0 +1,259 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>M4A &rarr; Text Transcriber</title>
+  <style>
+    :root { color-scheme: light; }
+    body {
+      font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+      max-width: 720px; margin: 2rem auto; padding: 0 1rem;
+      line-height: 1.5; color: #1f2937;
+    }
+    h1 { margin: 0 0 0.25rem; font-size: 1.6rem; }
+    .sub { color: #6b7280; margin-top: 0; margin-bottom: 1.25rem; }
+    label { display: block; margin: 0.85rem 0 0.25rem; font-weight: 600; font-size: 14px; }
+    input[type=password], input[type=text] {
+      width: 100%; padding: 0.55rem 0.65rem; border: 1px solid #d1d5db; border-radius: 6px;
+      font-size: 14px; box-sizing: border-box;
+    }
+    .row { display: flex; gap: 0.75rem; align-items: center; margin: 0.6rem 0; }
+    .dropzone {
+      border: 2px dashed #9ca3af; border-radius: 10px; padding: 2.25rem 1rem;
+      text-align: center; color: #6b7280; cursor: pointer;
+      transition: border-color 0.15s, background 0.15s, color 0.15s;
+    }
+    .dropzone:hover, .dropzone.over { border-color: #2563eb; background: #eff6ff; color: #1d4ed8; }
+    button {
+      background: #2563eb; color: #fff; border: 0; padding: 0.6rem 1.2rem;
+      border-radius: 6px; font-size: 14px; font-weight: 600; cursor: pointer;
+    }
+    button:disabled { background: #9ca3af; cursor: not-allowed; }
+    button.secondary { background: #4b5563; }
+    #status {
+      margin: 1rem 0; padding: 0.75rem 0.85rem; background: #f3f4f6;
+      border-radius: 6px; font-family: ui-monospace, "SF Mono", Consolas, monospace;
+      font-size: 13px; min-height: 1.5em; white-space: pre-wrap;
+    }
+    #transcript {
+      background: #fafafa; border: 1px solid #e5e7eb; border-radius: 6px;
+      padding: 1rem; max-height: 420px; overflow: auto; white-space: pre-wrap;
+      font-family: ui-monospace, "SF Mono", Consolas, monospace; font-size: 13px; margin: 0;
+    }
+    .warn {
+      background: #fef3c7; border: 1px solid #f59e0b; border-radius: 6px;
+      padding: 0.7rem 0.85rem; font-size: 13px; margin-bottom: 1rem; color: #78350f;
+    }
+    .hidden { display: none; }
+    .checkbox-label { font-weight: normal; margin: 0; display: inline-flex; align-items: center; gap: 0.4rem; font-size: 13px; }
+  </style>
+</head>
+<body>
+  <h1>M4A &rarr; Text Transcriber</h1>
+  <p class="sub">Drag in an <code>.m4a</code> (up to 60&nbsp;min) and get a transcript via OpenAI Whisper. Everything runs in this page &mdash; no terminal, no upload server.</p>
+
+  <div class="warn">
+    <strong>Heads up:</strong> your API key is sent directly from your browser to OpenAI. Nothing is uploaded anywhere else. Only use this on a trusted machine.
+  </div>
+
+  <label for="apiKey">OpenAI API key</label>
+  <input type="password" id="apiKey" placeholder="sk-..." autocomplete="off" spellcheck="false">
+  <div class="row">
+    <label class="checkbox-label"><input type="checkbox" id="rememberKey"> Remember in this browser</label>
+  </div>
+
+  <label>Audio file</label>
+  <div id="dropzone" class="dropzone">Drop an .m4a here, or click to choose</div>
+  <input type="file" id="fileInput" accept=".m4a,.mp4,.aac,audio/mp4,audio/x-m4a,audio/aac" hidden>
+
+  <div class="row">
+    <button id="startBtn" disabled>Transcribe</button>
+    <button id="downloadBtn" class="secondary" disabled>Download .txt</button>
+  </div>
+
+  <div id="status">No file selected.</div>
+  <pre id="transcript" class="hidden"></pre>
+
+  <script>
+  (() => {
+    const CHUNK_SECONDS = 600;       // 10-minute chunks
+    const MAX_DURATION = 60 * 60;    // 60 minutes
+    const TARGET_SR = 16000;         // Whisper's preferred rate
+
+    const $ = id => document.getElementById(id);
+    const apiKeyEl = $('apiKey');
+    const rememberKeyEl = $('rememberKey');
+    const dropzone = $('dropzone');
+    const fileInput = $('fileInput');
+    const startBtn = $('startBtn');
+    const downloadBtn = $('downloadBtn');
+    const statusEl = $('status');
+    const transcriptEl = $('transcript');
+
+    let selectedFile = null;
+    let transcript = '';
+
+    const savedKey = localStorage.getItem('openai_key');
+    if (savedKey) { apiKeyEl.value = savedKey; rememberKeyEl.checked = true; }
+
+    rememberKeyEl.addEventListener('change', () => {
+      if (rememberKeyEl.checked) {
+        if (apiKeyEl.value) localStorage.setItem('openai_key', apiKeyEl.value);
+      } else {
+        localStorage.removeItem('openai_key');
+      }
+    });
+    apiKeyEl.addEventListener('input', () => {
+      if (rememberKeyEl.checked) localStorage.setItem('openai_key', apiKeyEl.value);
+    });
+
+    const setStatus = msg => { statusEl.textContent = msg; };
+
+    function selectFile(file) {
+      selectedFile = file;
+      dropzone.textContent = `${file.name} — ${(file.size / 1e6).toFixed(1)} MB`;
+      startBtn.disabled = false;
+      downloadBtn.disabled = true;
+      transcriptEl.classList.add('hidden');
+      setStatus('Ready.');
+    }
+
+    dropzone.addEventListener('click', () => fileInput.click());
+    fileInput.addEventListener('change', e => {
+      if (e.target.files[0]) selectFile(e.target.files[0]);
+    });
+    ['dragover', 'dragenter'].forEach(ev => dropzone.addEventListener(ev, e => {
+      e.preventDefault(); dropzone.classList.add('over');
+    }));
+    ['dragleave', 'drop'].forEach(ev => dropzone.addEventListener(ev, e => {
+      e.preventDefault(); dropzone.classList.remove('over');
+    }));
+    dropzone.addEventListener('drop', e => {
+      const f = e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0];
+      if (f) selectFile(f);
+    });
+
+    async function decodeToMono(file, targetSampleRate) {
+      const arrayBuffer = await file.arrayBuffer();
+      const ACtx = window.AudioContext || window.webkitAudioContext;
+      if (!ACtx) throw new Error('Web Audio API not supported in this browser');
+      const ctx = new ACtx({ sampleRate: targetSampleRate });
+      let audioBuffer;
+      try {
+        audioBuffer = await ctx.decodeAudioData(arrayBuffer);
+      } catch (e) {
+        throw new Error(`could not decode audio (is this a real .m4a?): ${e.message || e}`);
+      } finally {
+        ctx.close();
+      }
+      const numCh = audioBuffer.numberOfChannels;
+      const len = audioBuffer.length;
+      const mono = new Float32Array(len);
+      for (let ch = 0; ch < numCh; ch++) {
+        const data = audioBuffer.getChannelData(ch);
+        for (let i = 0; i < len; i++) mono[i] += data[i] / numCh;
+      }
+      return { samples: mono, sampleRate: audioBuffer.sampleRate, duration: audioBuffer.duration };
+    }
+
+    function encodeWAV(samples, sampleRate) {
+      const numBytes = samples.length * 2;
+      const buf = new ArrayBuffer(44 + numBytes);
+      const v = new DataView(buf);
+      const writeStr = (off, s) => { for (let i = 0; i < s.length; i++) v.setUint8(off + i, s.charCodeAt(i)); };
+      writeStr(0, 'RIFF');
+      v.setUint32(4, 36 + numBytes, true);
+      writeStr(8, 'WAVE');
+      writeStr(12, 'fmt ');
+      v.setUint32(16, 16, true);
+      v.setUint16(20, 1, true);
+      v.setUint16(22, 1, true);
+      v.setUint32(24, sampleRate, true);
+      v.setUint32(28, sampleRate * 2, true);
+      v.setUint16(32, 2, true);
+      v.setUint16(34, 16, true);
+      writeStr(36, 'data');
+      v.setUint32(40, numBytes, true);
+      let off = 44;
+      for (let i = 0; i < samples.length; i++, off += 2) {
+        const x = Math.max(-1, Math.min(1, samples[i]));
+        v.setInt16(off, x < 0 ? x * 0x8000 : x * 0x7fff, true);
+      }
+      return new Blob([buf], { type: 'audio/wav' });
+    }
+
+    async function transcribeChunk(apiKey, blob, name) {
+      const form = new FormData();
+      form.append('file', blob, name);
+      form.append('model', 'whisper-1');
+      const resp = await fetch('https://api.openai.com/v1/audio/transcriptions', {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${apiKey}` },
+        body: form,
+      });
+      if (!resp.ok) {
+        let detail = '';
+        try { detail = (await resp.json()).error?.message || ''; } catch (_) {}
+        throw new Error(`OpenAI ${resp.status}${detail ? ': ' + detail : ''}`);
+      }
+      return (await resp.json()).text;
+    }
+
+    startBtn.addEventListener('click', async () => {
+      const apiKey = apiKeyEl.value.trim();
+      if (!apiKey) { setStatus('Enter your OpenAI API key first.'); return; }
+      if (!selectedFile) { setStatus('Pick an .m4a file first.'); return; }
+
+      startBtn.disabled = true;
+      downloadBtn.disabled = true;
+      transcriptEl.classList.add('hidden');
+      transcript = '';
+
+      try {
+        setStatus('Decoding audio (this may take a few seconds)...');
+        const { samples, sampleRate, duration } = await decodeToMono(selectedFile, TARGET_SR);
+        if (duration > MAX_DURATION) {
+          throw new Error(`audio is ${(duration/60).toFixed(1)} min; max supported is 60 min`);
+        }
+
+        const chunkSize = CHUNK_SECONDS * sampleRate;
+        const totalChunks = Math.max(1, Math.ceil(samples.length / chunkSize));
+        const pieces = [];
+        for (let i = 0, start = 0; start < samples.length; i++, start += chunkSize) {
+          const end = Math.min(start + chunkSize, samples.length);
+          const slice = samples.subarray(start, end);
+          const wav = encodeWAV(slice, sampleRate);
+          setStatus(`Transcribing chunk ${i + 1} / ${totalChunks} (${(wav.size / 1e6).toFixed(1)} MB)...`);
+          pieces.push(await transcribeChunk(apiKey, wav, `chunk_${String(i).padStart(3, '0')}.wav`));
+        }
+
+        transcript = pieces.map(p => p.trim()).filter(Boolean).join('\n\n');
+        transcriptEl.textContent = transcript;
+        transcriptEl.classList.remove('hidden');
+        downloadBtn.disabled = !transcript;
+        setStatus(`Done. ${transcript.length.toLocaleString()} characters across ${totalChunks} chunk${totalChunks === 1 ? '' : 's'}.`);
+      } catch (e) {
+        setStatus(`Error: ${e.message || e}`);
+      } finally {
+        startBtn.disabled = false;
+      }
+    });
+
+    downloadBtn.addEventListener('click', () => {
+      if (!transcript) return;
+      const blob = new Blob([transcript + '\n'], { type: 'text/plain;charset=utf-8' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      const stem = (selectedFile && selectedFile.name || 'transcript').replace(/\.[^.]+$/, '');
+      a.download = `${stem}.txt`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+    });
+  })();
+  </script>
+</body>
+</html>
