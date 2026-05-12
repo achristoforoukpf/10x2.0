@@ -187,7 +187,74 @@
       if (f) selectFile(f);
     });
 
-    async function decodeToMono(file, targetSampleRate) {
+    // Lazy-loaded ffmpeg.wasm fallback for codecs decodeAudioData refuses
+    // (ALAC, HE-AAC v2, unusual MP4 containers, etc.). Single-thread build so
+    // we don't need COOP/COEP headers on the hosting page.
+    let ffmpegPromise = null;
+    async function loadFfmpeg() {
+      if (!ffmpegPromise) {
+        ffmpegPromise = (async () => {
+          if (!window.FFmpegWASM) {
+            await new Promise((resolve, reject) => {
+              const s = document.createElement('script');
+              s.src = 'https://unpkg.com/@ffmpeg/[email protected]/dist/umd/ffmpeg.js';
+              s.crossOrigin = 'anonymous';
+              s.onload = () => resolve();
+              s.onerror = () => reject(new Error('failed to load @ffmpeg/ffmpeg from unpkg.com'));
+              document.head.appendChild(s);
+            });
+          }
+          const { FFmpeg } = window.FFmpegWASM;
+          const ff = new FFmpeg();
+          const base = 'https://unpkg.com/@ffmpeg/[email protected]/dist/umd';
+          await ff.load({
+            coreURL: `${base}/ffmpeg-core.js`,
+            wasmURL: `${base}/ffmpeg-core.wasm`,
+          });
+          return ff;
+        })().catch(err => { ffmpegPromise = null; throw err; });
+      }
+      return ffmpegPromise;
+    }
+
+    async function decodeWithFfmpeg(file, targetSampleRate, onStatus) {
+      onStatus('Browser refused this codec. Loading ffmpeg.wasm fallback from unpkg.com (~30 MB, cached after first use)...');
+      const ff = await loadFfmpeg();
+      onStatus('Transcoding with ffmpeg.wasm (this may take a minute)...');
+
+      const ext = (file.name.match(/\.[a-z0-9]+$/i) || ['.m4a'])[0];
+      const inName = 'input' + ext;
+      const outName = 'output.pcm';
+      await ff.writeFile(inName, new Uint8Array(await file.arrayBuffer()));
+      try {
+        const ret = await ff.exec([
+          '-i', inName,
+          '-vn',
+          '-ac', '1',
+          '-ar', String(targetSampleRate),
+          '-f', 's16le',
+          '-acodec', 'pcm_s16le',
+          outName,
+        ]);
+        if (ret !== 0) throw new Error(`ffmpeg exited with code ${ret}`);
+        const data = await ff.readFile(outName);
+        const view = data instanceof Uint8Array ? data : new Uint8Array(data);
+        const sampleCount = Math.floor(view.byteLength / 2);
+        const int16 = new Int16Array(view.buffer, view.byteOffset, sampleCount);
+        const samples = new Float32Array(sampleCount);
+        for (let i = 0; i < sampleCount; i++) samples[i] = int16[i] / 0x8000;
+        return {
+          samples,
+          sampleRate: targetSampleRate,
+          duration: sampleCount / targetSampleRate,
+        };
+      } finally {
+        try { await ff.deleteFile(inName); } catch (_) {}
+        try { await ff.deleteFile(outName); } catch (_) {}
+      }
+    }
+
+    async function decodeToMono(file, targetSampleRate, onStatus = () => {}) {
       const arrayBuffer = await file.arrayBuffer();
       const ACtx = window.AudioContext || window.webkitAudioContext;
       const OfflineCtx = window.OfflineAudioContext || window.webkitOfflineAudioContext;
@@ -199,15 +266,22 @@
       const ctx = new ACtx();
       let decoded;
       try {
-        decoded = await ctx.decodeAudioData(arrayBuffer.slice(0));
-      } catch (e) {
-        const detail = (e && (e.message || e.name)) || String(e);
-        const kind = file.type || 'unknown type';
-        throw new Error(
-          `could not decode "${file.name}" (${kind}, ${(file.size / 1e6).toFixed(1)} MB): ${detail}. ` +
-          `The browser may not support this codec — common culprits are ALAC, HE-AAC v2, or a corrupted container. ` +
-          `Try re-exporting as AAC-LC .m4a.`
-        );
+        try {
+          decoded = await ctx.decodeAudioData(arrayBuffer.slice(0));
+        } catch (e) {
+          try {
+            return await decodeWithFfmpeg(file, targetSampleRate, onStatus);
+          } catch (ff) {
+            const detail = (e && (e.message || e.name)) || String(e);
+            const ffDetail = (ff && (ff.message || ff.name)) || String(ff);
+            const kind = file.type || 'unknown type';
+            throw new Error(
+              `could not decode "${file.name}" (${kind}, ${(file.size / 1e6).toFixed(1)} MB). ` +
+              `Browser said: ${detail}. ffmpeg.wasm fallback said: ${ffDetail}. ` +
+              `Try re-exporting as AAC-LC .m4a.`
+            );
+          }
+        }
       } finally {
         ctx.close();
       }
@@ -290,7 +364,7 @@
 
       try {
         setStatus('Decoding audio (this may take a few seconds)...');
-        const { samples, sampleRate, duration } = await decodeToMono(selectedFile, TARGET_SR);
+        const { samples, sampleRate, duration } = await decodeToMono(selectedFile, TARGET_SR, setStatus);
         if (duration > MAX_DURATION) {
           throw new Error(`audio is ${(duration/60).toFixed(1)} min; max supported is 60 min`);
         }
