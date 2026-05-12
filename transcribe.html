@@ -189,37 +189,79 @@
 
     // Lazy-loaded ffmpeg.wasm fallback for codecs decodeAudioData refuses
     // (ALAC, HE-AAC v2, unusual MP4 containers, etc.). Single-thread build so
-    // we don't need COOP/COEP headers on the hosting page.
+    // we don't need COOP/COEP headers on the hosting page. No crossOrigin
+    // attribute — that forces CORS mode for the <script> and breaks loads
+    // from file:// pages whenever a CDN response lacks an ACAO header.
+    const FFMPEG_CDNS = [
+      {
+        name: 'unpkg.com',
+        lib: 'https://unpkg.com/@ffmpeg/[email protected]/dist/umd/ffmpeg.js',
+        base: 'https://unpkg.com/@ffmpeg/[email protected]/dist/umd',
+      },
+      {
+        name: 'jsdelivr.net',
+        lib: 'https://cdn.jsdelivr.net/npm/@ffmpeg/[email protected]/dist/umd/ffmpeg.js',
+        base: 'https://cdn.jsdelivr.net/npm/@ffmpeg/[email protected]/dist/umd',
+      },
+    ];
+
+    function loadScript(src) {
+      return new Promise((resolve, reject) => {
+        const s = document.createElement('script');
+        s.src = src;
+        s.onload = () => resolve();
+        s.onerror = () => reject(new Error(`script load failed: ${src}`));
+        document.head.appendChild(s);
+      });
+    }
+
     let ffmpegPromise = null;
-    async function loadFfmpeg() {
+    async function loadFfmpeg(onStatus) {
       if (!ffmpegPromise) {
         ffmpegPromise = (async () => {
+          let lastErr;
           if (!window.FFmpegWASM) {
-            await new Promise((resolve, reject) => {
-              const s = document.createElement('script');
-              s.src = 'https://unpkg.com/@ffmpeg/[email protected]/dist/umd/ffmpeg.js';
-              s.crossOrigin = 'anonymous';
-              s.onload = () => resolve();
-              s.onerror = () => reject(new Error('failed to load @ffmpeg/ffmpeg from unpkg.com'));
-              document.head.appendChild(s);
-            });
+            for (const cdn of FFMPEG_CDNS) {
+              try {
+                if (onStatus) onStatus(`Fetching ffmpeg.wasm loader from ${cdn.name}...`);
+                await loadScript(cdn.lib);
+                break;
+              } catch (e) {
+                lastErr = e;
+              }
+            }
+            if (!window.FFmpegWASM) {
+              throw new Error(
+                `could not load @ffmpeg/ffmpeg script from any CDN (last error: ${lastErr && lastErr.message || lastErr}). ` +
+                `Check that your network/extensions allow unpkg.com and cdn.jsdelivr.net.`
+              );
+            }
           }
           const { FFmpeg } = window.FFmpegWASM;
           const ff = new FFmpeg();
-          const base = 'https://unpkg.com/@ffmpeg/[email protected]/dist/umd';
-          await ff.load({
-            coreURL: `${base}/ffmpeg-core.js`,
-            wasmURL: `${base}/ffmpeg-core.wasm`,
-          });
-          return ff;
+          for (const cdn of FFMPEG_CDNS) {
+            try {
+              if (onStatus) onStatus(`Fetching ffmpeg-core (~30 MB) from ${cdn.name}...`);
+              await ff.load({
+                coreURL: `${cdn.base}/ffmpeg-core.js`,
+                wasmURL: `${cdn.base}/ffmpeg-core.wasm`,
+              });
+              return ff;
+            } catch (e) {
+              lastErr = e;
+            }
+          }
+          throw new Error(
+            `could not load ffmpeg-core from any CDN (last error: ${lastErr && lastErr.message || lastErr}).`
+          );
         })().catch(err => { ffmpegPromise = null; throw err; });
       }
       return ffmpegPromise;
     }
 
     async function decodeWithFfmpeg(file, targetSampleRate, onStatus) {
-      onStatus('Browser refused this codec. Loading ffmpeg.wasm fallback from unpkg.com (~30 MB, cached after first use)...');
-      const ff = await loadFfmpeg();
+      onStatus('Browser refused this codec. Loading ffmpeg.wasm fallback (cached after first use)...');
+      const ff = await loadFfmpeg(onStatus);
       onStatus('Transcoding with ffmpeg.wasm (this may take a minute)...');
 
       const ext = (file.name.match(/\.[a-z0-9]+$/i) || ['.m4a'])[0];
