@@ -5,45 +5,98 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>M4A &rarr; Text Transcriber</title>
   <style>
-    :root { color-scheme: light; }
+    :root {
+      color-scheme: light dark;
+      --bg: #ffffff;
+      --fg: #1f2937;
+      --muted: #6b7280;
+      --border: #d1d5db;
+      --input-bg: #ffffff;
+      --dropzone-border: #9ca3af;
+      --dropzone-fg: #6b7280;
+      --dropzone-hover-bg: #eff6ff;
+      --dropzone-hover-border: #2563eb;
+      --dropzone-hover-fg: #1d4ed8;
+      --primary: #2563eb;
+      --primary-fg: #ffffff;
+      --secondary: #4b5563;
+      --disabled: #9ca3af;
+      --panel: #f3f4f6;
+      --panel-strong: #fafafa;
+      --panel-border: #e5e7eb;
+      --warn-bg: #fef3c7;
+      --warn-border: #f59e0b;
+      --warn-fg: #78350f;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #0b1220;
+        --fg: #e5e7eb;
+        --muted: #9ca3af;
+        --border: #374151;
+        --input-bg: #111827;
+        --dropzone-border: #4b5563;
+        --dropzone-fg: #9ca3af;
+        --dropzone-hover-bg: #1e293b;
+        --dropzone-hover-border: #60a5fa;
+        --dropzone-hover-fg: #93c5fd;
+        --primary: #3b82f6;
+        --primary-fg: #ffffff;
+        --secondary: #4b5563;
+        --disabled: #374151;
+        --panel: #1f2937;
+        --panel-strong: #111827;
+        --panel-border: #374151;
+        --warn-bg: #422006;
+        --warn-border: #b45309;
+        --warn-fg: #fcd34d;
+      }
+    }
     body {
       font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
       max-width: 720px; margin: 2rem auto; padding: 0 1rem;
-      line-height: 1.5; color: #1f2937;
+      line-height: 1.5; color: var(--fg); background: var(--bg);
     }
     h1 { margin: 0 0 0.25rem; font-size: 1.6rem; }
-    .sub { color: #6b7280; margin-top: 0; margin-bottom: 1.25rem; }
+    .sub { color: var(--muted); margin-top: 0; margin-bottom: 1.25rem; }
     label { display: block; margin: 0.85rem 0 0.25rem; font-weight: 600; font-size: 14px; }
     input[type=password], input[type=text] {
-      width: 100%; padding: 0.55rem 0.65rem; border: 1px solid #d1d5db; border-radius: 6px;
+      width: 100%; padding: 0.55rem 0.65rem; border: 1px solid var(--border); border-radius: 6px;
       font-size: 14px; box-sizing: border-box;
+      background: var(--input-bg); color: var(--fg);
     }
+    input[type=password]::placeholder, input[type=text]::placeholder { color: var(--muted); }
     .row { display: flex; gap: 0.75rem; align-items: center; margin: 0.6rem 0; }
     .dropzone {
-      border: 2px dashed #9ca3af; border-radius: 10px; padding: 2.25rem 1rem;
-      text-align: center; color: #6b7280; cursor: pointer;
+      border: 2px dashed var(--dropzone-border); border-radius: 10px; padding: 2.25rem 1rem;
+      text-align: center; color: var(--dropzone-fg); cursor: pointer;
       transition: border-color 0.15s, background 0.15s, color 0.15s;
     }
-    .dropzone:hover, .dropzone.over { border-color: #2563eb; background: #eff6ff; color: #1d4ed8; }
+    .dropzone:hover, .dropzone.over {
+      border-color: var(--dropzone-hover-border);
+      background: var(--dropzone-hover-bg);
+      color: var(--dropzone-hover-fg);
+    }
     button {
-      background: #2563eb; color: #fff; border: 0; padding: 0.6rem 1.2rem;
+      background: var(--primary); color: var(--primary-fg); border: 0; padding: 0.6rem 1.2rem;
       border-radius: 6px; font-size: 14px; font-weight: 600; cursor: pointer;
     }
-    button:disabled { background: #9ca3af; cursor: not-allowed; }
-    button.secondary { background: #4b5563; }
+    button:disabled { background: var(--disabled); cursor: not-allowed; }
+    button.secondary { background: var(--secondary); }
     #status {
-      margin: 1rem 0; padding: 0.75rem 0.85rem; background: #f3f4f6;
+      margin: 1rem 0; padding: 0.75rem 0.85rem; background: var(--panel);
       border-radius: 6px; font-family: ui-monospace, "SF Mono", Consolas, monospace;
-      font-size: 13px; min-height: 1.5em; white-space: pre-wrap;
+      font-size: 13px; min-height: 1.5em; white-space: pre-wrap; color: var(--fg);
     }
     #transcript {
-      background: #fafafa; border: 1px solid #e5e7eb; border-radius: 6px;
+      background: var(--panel-strong); border: 1px solid var(--panel-border); border-radius: 6px;
       padding: 1rem; max-height: 420px; overflow: auto; white-space: pre-wrap;
       font-family: ui-monospace, "SF Mono", Consolas, monospace; font-size: 13px; margin: 0;
+      color: var(--fg);
     }
     .warn {
-      background: #fef3c7; border: 1px solid #f59e0b; border-radius: 6px;
-      padding: 0.7rem 0.85rem; font-size: 13px; margin-bottom: 1rem; color: #78350f;
+      background: var(--warn-bg); border: 1px solid var(--warn-border); border-radius: 6px;
+      padding: 0.7rem 0.85rem; font-size: 13px; margin-bottom: 1rem; color: var(--warn-fg);
     }
     .hidden { display: none; }
     .checkbox-label { font-weight: normal; margin: 0; display: inline-flex; align-items: center; gap: 0.4rem; font-size: 13px; }
