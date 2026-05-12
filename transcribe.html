@@ -137,24 +137,49 @@
     async function decodeToMono(file, targetSampleRate) {
       const arrayBuffer = await file.arrayBuffer();
       const ACtx = window.AudioContext || window.webkitAudioContext;
+      const OfflineCtx = window.OfflineAudioContext || window.webkitOfflineAudioContext;
       if (!ACtx) throw new Error('Web Audio API not supported in this browser');
-      const ctx = new ACtx({ sampleRate: targetSampleRate });
-      let audioBuffer;
+
+      // Decode at the browser's default rate. Passing { sampleRate: 16000 } to
+      // the AudioContext constructor makes Safari (and some Chrome builds)
+      // refuse the buffer with "Unable to decode audio data".
+      const ctx = new ACtx();
+      let decoded;
       try {
-        audioBuffer = await ctx.decodeAudioData(arrayBuffer);
+        decoded = await ctx.decodeAudioData(arrayBuffer.slice(0));
       } catch (e) {
-        throw new Error(`could not decode audio (is this a real .m4a?): ${e.message || e}`);
+        const detail = (e && (e.message || e.name)) || String(e);
+        const kind = file.type || 'unknown type';
+        throw new Error(
+          `could not decode "${file.name}" (${kind}, ${(file.size / 1e6).toFixed(1)} MB): ${detail}. ` +
+          `The browser may not support this codec — common culprits are ALAC, HE-AAC v2, or a corrupted container. ` +
+          `Try re-exporting as AAC-LC .m4a.`
+        );
       } finally {
         ctx.close();
       }
-      const numCh = audioBuffer.numberOfChannels;
-      const len = audioBuffer.length;
+
+      // Resample to the target rate via OfflineAudioContext, which accepts
+      // low rates like 16 kHz that the realtime AudioContext rejects.
+      let buffer = decoded;
+      if (OfflineCtx && decoded.sampleRate !== targetSampleRate) {
+        const frames = Math.max(1, Math.ceil(decoded.duration * targetSampleRate));
+        const offline = new OfflineCtx(decoded.numberOfChannels, frames, targetSampleRate);
+        const src = offline.createBufferSource();
+        src.buffer = decoded;
+        src.connect(offline.destination);
+        src.start(0);
+        buffer = await offline.startRendering();
+      }
+
+      const numCh = buffer.numberOfChannels;
+      const len = buffer.length;
       const mono = new Float32Array(len);
       for (let ch = 0; ch < numCh; ch++) {
-        const data = audioBuffer.getChannelData(ch);
+        const data = buffer.getChannelData(ch);
         for (let i = 0; i < len; i++) mono[i] += data[i] / numCh;
       }
-      return { samples: mono, sampleRate: audioBuffer.sampleRate, duration: audioBuffer.duration };
+      return { samples: mono, sampleRate: buffer.sampleRate, duration: buffer.duration };
     }
 
     function encodeWAV(samples, sampleRate) {
